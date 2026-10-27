@@ -7,19 +7,9 @@
 
 ## 运行截图
 
-整机效果 —— 照片机壳 + LCD + 按键辉光 + 底部独立的「程序列表」键，屏幕上跑的是原版 `rich.bin` 字节码：
+iPhone 真机运行效果 —— 照片机壳 + LCD + 按键辉光，屏幕上跑的是原版 `rich.bin` 字节码（大富翁2）：
 
-![整机运行效果](screenshots/rich4-device.png)
-
-以下均为虚拟机直接输出的 LCD 画面（240×320，未加滤镜）：
-
-| 标题菜单 | 游戏内 |
-|---|---|
-| ![大富翁标题菜单](screenshots/rich4-menu.png) | ![大富翁游戏内](screenshots/rich4-board.png) |
-
-HD 资源包效果（同一画面局部 1× vs 3×，位图文字与骰子重制后边缘干净、笔画均匀）：
-
-![HD 对比](screenshots/rich4-hd.png)
+![iPhone 真机运行效果](screenshots/device-run.jpg)
 
 ## 这是什么
 
