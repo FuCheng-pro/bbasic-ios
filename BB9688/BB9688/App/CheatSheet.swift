@@ -191,7 +191,7 @@ struct CheatSheet: View {
 
     private var moneySection: some View {
         section(title: "金钱",
-                note: cheat.infiniteCash ? "托底 \(BBCheat.cashFloor.formatted())" : "状态栏下一回合刷新") {
+                note: cheat.infiniteCash ? "托底 \(BBCheat.cashFloor.formatted())" : "状态栏会立刻刷新") {
             VStack(spacing: 8) {
                 ForEach(0..<BBCheat.Layout.cashSlots, id: \.self) { i in
                     cashRow(i)

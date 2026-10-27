@@ -398,7 +398,13 @@ extension BBVM {
     }
 
     private func waitKey() -> UInt32 {
-        input.waitKey() ?? 0
+        // 分片等：每 30ms 回来一次，顺手把金手指挂起的注入调用跑掉。
+        // 死等的话游戏一旦停在「等玩家按键」，注入请求就永远排不上队。
+        while true {
+            if let key = input.waitKey(timeout: 0.03) { return key }
+            if input.isStopped { return 0 }
+            drainInjection()
+        }
     }
 
     private func delay(milliseconds: Int) {

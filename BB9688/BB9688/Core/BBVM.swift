@@ -107,6 +107,8 @@ public final class BBVM {
         exitReason = nil
         pendingCall = nil
         injectedCaller = nil
+        injectionSteps = 0
+        injecting = false
     }
 
     // MARK: - 注入调用
@@ -116,7 +118,18 @@ public final class BBVM {
     private static let injectionSentinel: UInt32 = 0xFFFF_FFF0
 
     private var pendingCall: UInt32?
+    /// 主循环注入时暂存的寄存器组（注入跑完就恢复）
     private var injectedCaller: [UInt32]?
+    /// 本次注入已经执行了多少条指令（防跑飞）
+    private var injectionSteps = 0
+    /// 正在执行注入（防重入：注入的函数里若又走到等键，不能再套一层）
+    private var injecting = false
+
+    /// 诊断计数：注入了几次、成功返回了几次。探针用它确认注入真的执行了。
+    public private(set) var injectedCount = 0
+    public private(set) var injectionReturnedCount = 0
+    /// 上一次注入实际执行了多少条指令（诊断：太少说明地址指到了函数尾部）
+    public private(set) var lastInjectionSteps = 0
 
     /// 请求在下一个指令边界**调用一次**子程序，返回后寄存器原样恢复。
     ///
@@ -124,13 +137,41 @@ public final class BBVM {
     /// 与其等下一回合，不如直接调一次游戏的绘制函数（`0x320BA`）。
     ///
     /// 安全性：
-    ///  · 只在指令边界插入，不会打断某条指令；
+    ///  · 在**指令边界**插入（不会打断半条指令），跑完恢复全部寄存器；
+    ///  · 目标函数必须是纯绘制/只读的 —— 它会插在游戏执行流中间被跑一次；
     ///  · 用哨兵返回地址 + 全寄存器保存/恢复，对调用方完全透明；
     ///  · 目标函数应当是**只读绘制**（状态栏就是这么个函数）；
-    ///  · 同一时刻只允许一个挂起请求，重复调用以最后一次为准。
+    ///  · 步数超限强制放弃，防跑飞；
+    ///  · 同一时刻只允许一个挂起请求。
     public func requestSubroutineCall(_ target: UInt32) {
         guard target > 0, target < UInt32(memory.size - 16) else { return }
         pendingCall = target
+    }
+
+    /// 把挂起的注入**就地**跑完（阻塞等待期间用）。
+    ///
+    /// 和主循环里那套是同一件事，区别是这里直接在栈上解释执行到 RET：
+    /// 游戏卡在 `waitKey()` 时主循环不转，只能这样插。
+    /// 全程保存/恢复 regs，对调用方透明；另外加步数上限防跑飞。
+    func drainInjection() {
+        guard let target = pendingCall, !injecting else { return }
+        pendingCall = nil
+        let saved = regs
+        injecting = true
+        push(BBVM.injectionSentinel)
+        regs[R.rp] = target
+        injectedCount += 1
+
+        var steps = 0
+        while isRunning, regs[R.rp] != BBVM.injectionSentinel {
+            if !exec() { break }
+            steps += 1
+            if steps > 500_000 { break }
+        }
+        lastInjectionSteps = steps
+        regs = saved
+        injecting = false
+        injectionReturnedCount += 1
     }
 
     // MARK: - 运行
@@ -161,20 +202,28 @@ public final class BBVM {
 
         while isRunning {
             // ── 注入调用（金手指用）──────────────────────────────────
-            // 先把「上一次注入跑完了没有」判掉，再决定要不要注入新的一次。
+            // 游戏等按键是**轮询**式的（主循环一直在转），所以注入主要靠这里执行；
+            // `drainInjection` 那条只是兜住少数真的阻塞在 waitKey 上的场景。
+            //
             // 哨兵地址故意取一个不可能执行的 pc：一旦 rp 变成它，就说明
             // 被调用的子程序 RET 回来了，把寄存器（含 rp）原样恢复。
+            // 目标函数必须是只读绘制（状态栏就是），否则可能破坏正在做的事务；
+            // 另外加了步数上限，万一地址指错也不会把 VM 拖死。
             if let saved = injectedCaller {
-                if rp == BBVM.injectionSentinel {
+                if rp == BBVM.injectionSentinel || injectionSteps > 400_000 {
                     regs = saved
                     injectedCaller = nil
+                    injectionReturnedCount += 1
                     continue
                 }
-            } else if let target = pendingCall {
+                injectionSteps += 1
+            } else if let target = pendingCall, !injecting {
                 pendingCall = nil
                 injectedCaller = regs
+                injectionSteps = 0
                 push(BBVM.injectionSentinel)
                 regs[R.rp] = target
+                injectedCount += 1
             }
 
             if !exec() { break }

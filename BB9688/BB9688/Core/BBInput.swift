@@ -122,11 +122,26 @@ public final class BBInputQueue {
     }
 
     public func waitKey() -> UInt32? {
+        waitKey(timeout: nil)
+    }
+
+    /// 带超时的等键。超时返回 nil（和 `stopped` 一样返回 nil，调用方自己用
+    /// `isStopped` 区分）。
+    ///
+    /// 为什么需要：游戏九成时间卡在等按键上，VM 主循环根本没在转。
+    /// 金手指要「改完钱立刻重画状态栏」，就得在等待的空档里插一手 ——
+    /// 见 `BBVM.drainInjection()`。
+    public func waitKey(timeout: TimeInterval?) -> UInt32? {
         condition.lock()
         defer { condition.unlock() }
+        let deadline = timeout.map { Date(timeIntervalSinceNow: $0) }
         while true {
             while keyQueue.isEmpty && !stopped {
-                condition.wait()
+                if let deadline {
+                    if !condition.wait(until: deadline) { return nil }   // 超时
+                } else {
+                    condition.wait()
+                }
             }
             if keyQueue.isEmpty { return nil }
             let item = keyQueue.removeFirst()
