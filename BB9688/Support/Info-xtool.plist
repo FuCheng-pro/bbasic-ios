@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  xtool 专用的 Info.plist 片段。
+  xtool 会把它 merge 到自动生成的 Info.plist 上（自定义键优先），
+  所以这里只写「默认值里没有」的键，不写 $(...) 之类的构建设置占位符。
+  Xcode 用的是 BB9688/Info.plist。
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>9688</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.5</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UIStatusBarHidden</key>
+	<true/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

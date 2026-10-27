@@ -1,0 +1,6 @@
+version: 1
+bundleID: com.bbk.bb9688
+product: BB9688
+infoPath: Support/Info-xtool.plist
+# 1024×1024 不透明 PNG，由 Tools/make_app_icon.py 生成（path 相对项目根）
+iconPath: Support/AppIcon.png

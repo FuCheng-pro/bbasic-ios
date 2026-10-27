@@ -1,0 +1,17 @@
+# ===== 只入库 iOS 项目（BB9688），其余为逆向分析资料，不上传 =====
+/*
+!.gitignore
+!BB9688/
+
+# BB9688 内的构建产物与本地配置
+BB9688/.build/
+BB9688/.bsp/
+BB9688/xtool/.xtool-tmp/
+BB9688/xtool/*.ipa
+BB9688/**/*.xcodeproj/xcuserdata/
+BB9688/**/DerivedData/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
