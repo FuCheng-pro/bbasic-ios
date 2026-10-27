@@ -26,14 +26,25 @@ iPhone 真机运行效果 —— 照片机壳 + LCD + 按键辉光，屏幕上�
 
 ## 快速开始
 
-两条构建路线，同一批源码：
+### 方式一：直接安装（推荐）
 
-| 环境 | 命令 | 说明 |
-|---|---|---|
-| WSL / Linux | `./build.sh xtool` | 用 [xtool](https://xtool.sh) 交叉编译，不需要 Mac |
-| macOS | `./build.sh run` | 用 Xcode + 模拟器 |
+不用自己编译 —— 到 [Releases](https://github.com/FuCheng-pro/bbasic-ios/releases) 下载最新的 `BB9688.ipa` 安装即可。
 
-或者直接 `open BB9688/BB9688.xcodeproj`（Xcode 15+，iOS 16+）。
+> ipa 未签名，需用 [AltStore / Sideloadly / TrollStore](https://github.com/SignTools/SignTools) 等工具自签后安装，或接入 Xcode 直接部署。
+
+### 方式二：自己编译
+
+本项目使用 [xtool](https://xtool.sh) 编译 —— 在 **WSL / Linux 上交叉编译出 iOS App，全程不需要 Mac**：
+
+```bash
+# WSL / Linux（首次需要 xtool setup 安装 Darwin SDK，约 1~2 GB）
+./build.sh xtool
+```
+
+产物是 `BB9688/xtool/BB9688.ipa`。
+
+有 Mac 的话也可以走 Xcode：直接 `open BB9688/BB9688.xcodeproj`（Xcode 15+，iOS 16+），
+或 `./build.sh run` 跑模拟器。
 
 ## 仓库结构
 
