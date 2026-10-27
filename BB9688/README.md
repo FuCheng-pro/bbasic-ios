@@ -3,6 +3,8 @@
 步步高 9688（BBK 外语通）的 BBVM 虚拟机，SwiftUI 原生实现。
 界面是一台机器：机壳、按键、Logo 全部来自真机照片，屏幕上跑的是真实的 `.bin` 字节码。
 
+> 指令集、端口语义与 `.LIB` 格式参考开源项目 [0ximst1ll/bbasic](https://github.com/0ximst1ll/bbasic)（C++ 实现），本文中的 `bbvm.cc` 即出自该仓库。
+
 **两条构建路线，同一批源码：**
 
 | 环境 | 命令 | 说明 |
