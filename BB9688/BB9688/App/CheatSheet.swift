@@ -29,6 +29,9 @@ struct CheatSheet: View {
     private let gold = Color(red: 0.98, green: 0.78, blue: 0.36)
     private let ink = Color.white.opacity(0.92)
     private let sub = Color.white.opacity(0.42)
+    /// 涨 = 红、跌 = 绿（A 股习惯，和行情软件一致）
+    private let up = Color(red: 0.96, green: 0.38, blue: 0.36)
+    private let down = Color(red: 0.32, green: 0.80, blue: 0.53)
 
     var body: some View {
         ZStack {
@@ -43,6 +46,7 @@ struct CheatSheet: View {
                             unavailableNote
                         }
                         diceSection
+                        casinoSection
                         moneySection
                         stockSection
                         footerNote
@@ -116,7 +120,7 @@ struct CheatSheet: View {
     }
 
     private var footerNote: some View {
-        Text("地址来自对 rich.bin 的反汇编与内存实测：现金 0x78374+4·i、股价表 0x7A30C+13·i、骰子 RND(6) 的两个调用点。改动只写在这几处，不碰别的位置。")
+        Text("地址来自对 rich.bin 的反汇编与内存实测：现金 0x78374+4·i、股价表 0x7A30C+13·i、走路骰子 RND(6) 两个调用点、赌场骰子三个调用点（pc 138695/138755/138815）、手牌表 0x78640+4·(8·玩家+槽)（只读）。改动只写在这几处，不碰别的位置。")
             .font(.system(size: 10.5))
             .foregroundColor(Color.white.opacity(0.30))
             .fixedSize(horizontal: false, vertical: true)
@@ -187,6 +191,141 @@ struct CheatSheet: View {
         withAnimation(.easeOut(duration: 0.14)) { cheat.diceB = value }
     }
 
+    // MARK: - 赌场（赌神 / 赌圣）
+
+    /// 两张卡都做成「常驻」：开关一开，游戏问起就是「有」。
+    ///
+    /// ⚠️ 2026-10-27 定稿：**不写内存、不塞手牌**。挂的是 VM 的 `callHook`，
+    /// 游戏调 `hasCard` 问 8/9 号卡时直接代答「有」（返回一个空槽号），
+    /// 手牌表一个字不动 —— 所以手里不会凭空多出一张卡，卖卡/用卡也不受影响。
+    ///
+    /// 另外：这版移植的赌场**没有实现卡 8/9 的效果**（全程序 `hasCard` 只查
+    /// 1/10/16/20/21/22/23/29 号卡，赌场里读手牌只为了画那一排），所以效果
+    /// 仍由金手指兜：赌神 = 赢钱再补一份；赌圣 = 骰盅不盖（见 `BBCheat.allowsPicture`）。
+    private var casinoSection: some View {
+        section(title: "赌场", note: "赌神卡 / 赌圣卡 · 常驻") {
+            VStack(spacing: 8) {
+                toggleRow("赌神卡",
+                          note: "游戏问起就是有 · 赌场赢钱自动再补一份，输了不动",
+                          isOn: cheat.godGambler) {
+                    cheat.godGambler.toggle()
+                }
+                toggleRow("赌圣卡",
+                          note: "游戏问起就是有 · 进赌场骰盅不盖，三粒点数一直看得见",
+                          isOn: cheat.saintGambler) {
+                    cheat.saintGambler.toggle()
+                }
+
+                if cheat.saintGambler {
+                    saintReadout
+                    saintStatus
+                }
+
+                handStatus
+            }
+        }
+    }
+
+    /// 赌圣读到的点数。数值来自游戏自己掷好的那三粒（栈帧 `[rb-4/8/12]`），
+    /// 不是我们另掷的，所以和画面上那三粒永远是同一把。
+    private var saintReadout: some View {
+        HStack(spacing: 8) {
+            Text("这一把")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.34))
+            if let formula = cheat.casinoFormula, let size = cheat.casinoBigSmall {
+                Text(formula)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundColor(gold)
+                    .monospacedDigit()
+                Text(size)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(Color.white.opacity(0.75))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(gold.opacity(0.14))
+                    )
+                Text("≥11 大 / ≤10 小")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color.white.opacity(0.28))
+            } else {
+                Text("还没进赌场（进门掷完骰子才有点数）")
+                    .font(.system(size: 10))
+                    .foregroundColor(Color.white.opacity(0.30))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(gold.opacity(0.07))
+        )
+    }
+
+    /// 这张卡游戏到底来问过没有。
+    ///
+    /// 我们**不往手牌里写卡**，所以手牌表里永远看不到它 —— 能证明「生效了」的
+    /// 唯一证据，就是游戏调 `hasCard` 问 8/9 号卡时，我们替它答了「有」。
+    /// 答过一次这里就亮。
+    /// 赌圣这一串「到底走到哪一步了」——真机上没露骰子时，看这一行就知道卡在哪：
+    /// 没进赌场 / 没读到点数 / 还在摇盅。
+    private var saintStatus: some View {
+        let scene = cheat.inCasino ? "赌场" : "其它场景"
+        let pips = cheat.casinoDice.isEmpty
+            ? "没读到点数"
+            : cheat.casinoDice.map(String.init).joined(separator: "+")
+        // 「摇盅中」= 盅还在摇，画面上故意不露骰子；「骰子已露」= 摇完了，三粒已贴上去
+        let lid = cheat.cupOpen ? "骰子已露" : "摇盅中"
+        // 「第 N 局」会跟着每一次摇盅 +1：真机上这个数不涨，就说明这一局没被
+        // 当成新的一局，点数当然不会换（见 `BBCheat.planRound`）。
+        let round = cheat.roundNumber > 0 ? "第 \(cheat.roundNumber) 局 · " : ""
+        return Text("\(round)\(scene) · \(pips) · \(lid)")
+            .font(.system(size: 9.5))
+            .foregroundColor(Color.white.opacity(0.42))
+            .monospacedDigit()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.bottom, 2)
+    }
+
+    private var handStatus: some View {
+        let god = cheat.cardAsked.contains(BBCheatMap.cardGod)
+        let saint = cheat.cardAsked.contains(BBCheatMap.cardSaint)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("游戏问过")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundColor(Color.white.opacity(0.34))
+                chip(text: "赌神", on: god)
+                chip(text: "赌圣", on: saint)
+                Spacer(minLength: 0)
+            }
+            Text("不写内存、不塞手牌：游戏问「有没有这张卡」时直接答有。")
+                .font(.system(size: 9.5))
+                .foregroundColor(Color.white.opacity(0.34))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(gold.opacity(0.07))
+        )
+    }
+
+    private func chip(text: String, on: Bool) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: on ? .semibold : .regular))
+            .foregroundColor(on ? gold : Color.white.opacity(0.30))
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(gold.opacity(on ? 0.16 : 0.05))
+            )
+    }
+
     // MARK: - 金钱
 
     private var moneySection: some View {
@@ -252,21 +391,16 @@ struct CheatSheet: View {
 
     private var stockSection: some View {
         section(title: "股价",
-                note: "\(BBCheat.Layout.stockCount) 家公司 · 均价 \(averagePrice)") {
+                note: "\(BBCheat.Layout.stockCount) 家 · 均价 \(averagePrice) · 约 \(Int(BBCheat.Layout.secondsPerMonth)) 秒一个月") {
             VStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    smallButton("全部翻倍", tint: accent) { cheat.boostStocks(2) }
-                    smallButton("全部 +50%", tint: accent) { cheat.boostStocks(1.5) }
-                    smallButton("全拉到 999", tint: accent) {
-                        cheat.setAllStocks(BBCheat.Layout.priceCap)
-                    }
-                    Spacer(minLength: 0)
-                }
+                trendRow
+                rangeRow
 
-                toggleRow("只涨不跌", note: "游戏把价格压下去就写回原来的高点",
-                          isOn: cheat.stockNeverFalls) {
+                toggleRow("只涨不跌", note: "只防跌，不主动推涨", isOn: cheat.stockNeverFalls) {
                     cheat.stockNeverFalls.toggle()
                 }
+
+                recentPanel
 
                 singleStockBar
 
@@ -281,6 +415,147 @@ struct CheatSheet: View {
                 }
             }
         }
+    }
+
+    /// 趋势三选一：只决定往上还是往下，幅度还是游戏自己算的。
+    private var trendRow: some View {
+        HStack(spacing: 6) {
+            Text("趋势")
+                .font(.system(size: 11))
+                .foregroundColor(sub)
+                .frame(width: 26, alignment: .leading)
+            chip("跌", on: cheat.stockTrend < 0, tint: gold) { cheat.stockTrend = -1 }
+            chip("原样", on: cheat.stockTrend == 0, tint: gold) { cheat.stockTrend = 0 }
+            chip("涨", on: cheat.stockTrend > 0, tint: gold) { cheat.stockTrend = 1 }
+        }
+    }
+
+    /// 护栏：把价格关在 [下限, 上限] 里。涨跌方向由上面决定，这里只管别跑飞。
+    private var rangeRow: some View {
+        VStack(spacing: 7) {
+            toggleRow("限定区间",
+                      note: cheat.stockRange
+                        ? "价格只在 \(cheat.stockLower)–\(cheat.stockUpper) 之间"
+                        : "涨跌不限幅",
+                      isOn: cheat.stockRange) {
+                cheat.stockRange.toggle()
+            }
+            if cheat.stockRange {
+                HStack(spacing: 10) {
+                    stepper("下限", cheat.stockLower) { cheat.stepLower($0) }
+                    stepper("上限", cheat.stockUpper) { cheat.stepUpper($0) }
+                    Spacer(minLength: 0)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    /// 一个 `− 值 +` 的小步进器（步长 10）
+    private func stepper(_ label: String, _ value: Int,
+                         action: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundColor(sub)
+            Button {
+                UISelectionFeedbackGenerator().selectionChanged()
+                action(-10)
+            } label: {
+                stepGlyph("minus")
+            }
+            .buttonStyle(.plain)
+
+            Text("\(value)")
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
+                .foregroundColor(ink)
+                .frame(minWidth: 34)
+
+            Button {
+                UISelectionFeedbackGenerator().selectionChanged()
+                action(10)
+            } label: {
+                stepGlyph("plus")
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func stepGlyph(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundColor(gold)
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(gold.opacity(0.13))
+            )
+    }
+
+    // MARK: - 最近 12 次调价
+
+    /// 只记事实，不做预测 —— 这是上一版踩过的坑：游戏每个月的浮动方向是一次
+    /// `RND(2)`（反汇编 0x589F0），记多少历史都推不出偏向，画「预测」等于编。
+    /// 但**已经发生过的事**是可以如实摆出来的：每 0.4 秒轮询 20 个价格，
+    /// 一变就存一张快照（最多 1 条基线 + 12 次变化），这里画选中那只的逐次涨跌。
+    ///
+    /// 手动改价也会记一笔，但颜色更淡、顶上有个白点，能和「游戏自己调的」分开。
+    private var recentPanel: some View {
+        let index = min(max(selectedStock, 0), BBCheat.Layout.stockCount - 1)
+        let name = index < cheat.stockNames.count ? cheat.stockNames[index] : "—"
+        let series = Array(BBCheatMap.changeSeries(cheat.ticks, index).suffix(12))
+        let ups = series.filter { $0.pct > 0.05 }.count
+        let downs = series.filter { $0.pct < -0.05 }.count
+        let mean = series.isEmpty ? 0 : series.reduce(0.0) { $0 + $1.pct } / Double(series.count)
+        let tail = cheat.ticks.suffix(7).map { index < $0.prices.count ? $0.prices[index] : 0 }
+        return VStack(spacing: 7) {
+            HStack(spacing: 6) {
+                Text("最近 12 次")
+                    .font(.system(size: 11))
+                    .foregroundColor(sub)
+                Text(name)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(gold)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(series.count)/12")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundColor(series.isEmpty ? sub : accent)
+            }
+
+            TickBars(values: series.map { $0.pct }, manuals: series.map { $0.manual }, slots: 12)
+                .frame(height: 72)
+
+            if series.isEmpty {
+                Text("还没记录到调价。每个月调一次（约 \(Int(BBCheat.Layout.secondsPerMonth)) 秒），开一局等一会儿就有了。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(Color.white.opacity(0.32))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(spacing: 3) {
+                    Text(tail.map(String.init).joined(separator: " → "))
+                        .font(.system(size: 9.5))
+                        .monospacedDigit()
+                        .foregroundColor(Color.white.opacity(0.30))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(ups) 涨 · \(downs) 跌 · 均值 \(String(format: "%+.1f%%", mean)) · 白点 = 我改的")
+                        .font(.system(size: 9.5))
+                        .monospacedDigit()
+                        .foregroundColor(Color.white.opacity(0.34))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+        )
     }
 
     /// 单只股票的操作条。上面是「选中的是哪一家 + 现价」，下面一排是动作。
@@ -309,13 +584,10 @@ struct CheatSheet: View {
                     .foregroundColor(Color.white.opacity(0.26))
             }
             HStack(spacing: 6) {
-                smallButton("×2", tint: gold) { cheat.boostStock(index, 2) }
-                smallButton("+50%", tint: gold) { cheat.boostStock(index, 1.5) }
-                smallButton("−50%", tint: gold) { cheat.boostStock(index, 0.5) }
-                smallButton("拉满", tint: gold) {
-                    cheat.setStock(index, BBCheat.Layout.priceCap)
-                }
-                smallButton("砸到 1", tint: gold) { cheat.setStock(index, 1) }
+                smallButton("−10%", tint: gold) { cheat.nudgeStock(index, -0.1) }
+                smallButton("+10%", tint: gold) { cheat.nudgeStock(index, 0.1) }
+                smallButton("×2", tint: gold) { cheat.nudgeStock(index, 1.0) }
+                smallButton("÷2", tint: gold) { cheat.nudgeStock(index, -0.5) }
                 Spacer(minLength: 0)
             }
         }
@@ -465,5 +737,62 @@ struct CheatSheet: View {
         .buttonStyle(.plain)
         .accessibilityLabel(title)
         .accessibilityValue(isOn ? "开" : "关")
+    }
+}
+
+/// 12 根柱子 = 最近 12 次调价，向上红（涨）、向下绿（跌），长度 = 幅度。
+///
+/// 固定 12 个槽位（没攒满的打一条灰线），这样「还差几次」一眼可见。
+/// 手动改的那一次画成半透明并点一个白点 —— 别让玩家以为自己手改的和行情混在一起。
+private struct TickBars: View {
+    let values: [Double]
+    let manuals: [Bool]
+    let slots: Int
+
+    private let maxAbs: Double = 11
+    private let upColor = Color(red: 0.96, green: 0.38, blue: 0.36)
+    private let downColor = Color(red: 0.32, green: 0.80, blue: 0.53)
+
+    var body: some View {
+        Canvas { ctx, size in
+            let n = max(1, slots)
+            let gap: CGFloat = 3
+            let w = max(2, (size.width - gap * CGFloat(n - 1)) / CGFloat(n))
+            let midY = size.height / 2
+
+            var axis = Path()
+            axis.move(to: CGPoint(x: 0, y: midY))
+            axis.addLine(to: CGPoint(x: size.width, y: midY))
+            ctx.stroke(axis, with: .color(Color.white.opacity(0.10)), lineWidth: 0.6)
+
+            for i in 0..<n {
+                let x = CGFloat(i) * (w + gap)
+                let shown = i >= n - values.count
+                guard shown else {
+                    // 空槽：一条细灰线，表示「这一次还没发生」
+                    ctx.fill(Path(roundedRect: CGRect(x: x, y: midY - 1, width: w, height: 2),
+                                  cornerRadius: 1),
+                             with: .color(Color.white.opacity(0.07)))
+                    continue
+                }
+                let k = i - (n - values.count)
+                let pct = max(-maxAbs, min(maxAbs, values[k]))
+                let barH = max(1.5, CGFloat(abs(pct) / maxAbs) * (midY - 4))
+                let rising = pct >= 0
+                let color = rising ? upColor : downColor
+                let rect = rising
+                    ? CGRect(x: x, y: midY - barH, width: w, height: barH)
+                    : CGRect(x: x, y: midY, width: w, height: barH)
+                ctx.fill(Path(roundedRect: rect, cornerRadius: min(2.5, w / 2)),
+                         with: .color(manuals[k] ? color.opacity(0.45) : color))
+
+                if manuals[k] {
+                    let cy = rising ? rect.minY - 3.5 : rect.maxY + 3.5
+                    ctx.fill(Path(ellipseIn: CGRect(x: x + w / 2 - 1.5, y: cy - 1.5,
+                                                    width: 3, height: 3)),
+                             with: .color(Color.white.opacity(0.55)))
+                }
+            }
+        }
     }
 }

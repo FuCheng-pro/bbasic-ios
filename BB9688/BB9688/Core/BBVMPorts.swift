@@ -299,6 +299,7 @@ extension BBVM {
         case 38:
             screen.setFont(Int(regs[R.r3]))
         case 39:
+            usedBlockingKeyRead = true
             regs[R.r3] = waitKey()
         case 40:
             regs[R.r3] = UInt32(graphics.pictureWidth(Int(bbSigned(regs[R.r3]))))
@@ -314,9 +315,11 @@ extension BBVM {
         case 44:
             screen.transparent = regs[R.r3] == 1
         case 45:    // InKey$
+            usedBlockingKeyRead = true
             let key = waitKey()
             putString(regs[R.r3], [UInt8(key & 0xFF)])
         case 46:    // INKEY
+            usedBlockingKeyRead = true
             regs[R.r3] = waitKey()
         case 48:
             storage.openFile(ioString(regs[R.r3]), handle: Int(bbSigned(regs[R.r1])))

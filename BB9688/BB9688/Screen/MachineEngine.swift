@@ -472,10 +472,17 @@ final class MachineEngine: ObservableObject {
         // 资源号是唯一可靠的「当前在哪个界面」信号：BBK 版删掉了音频，
         // 但画面还是原版的画面，棋盘每帧重绘几百笔地块图这件事改不掉。
         // 检测器内部有 0.35s 节流，`feed` 只是累加，不在这里做判断。
-        sceneDetector.onChange = { scene in BGMPlayer.shared.setScene(scene) }
+        sceneDetector.onChange = { [weak self] scene in
+            BGMPlayer.shared.setScene(scene)
+            // 场景一变就立刻同步给金手指（赌圣的预知只在赌场里画，离开就收）
+            self?.cheat.noteScene(scene)
+        }
         sceneDetector.reset()
         vm.graphics.onPictureDrawn = { [weak self] index, area in
             self?.sceneDetector.feed(libIndex: index, area: area)
+            // 棋盘地块（LIB 63）只在跑地图时反复贴，赌场里不会出现。
+            // 用它兜底判断「已经回到地图了」—— 场景识别是粘性的，不能只靠它。
+            if index == 63 { self?.cheat.markBoardDrawing() }
         }
         // 画笔操作：游乐场那个「小碗接金币」完全没有贴图，只能靠这个认出来。
         vm.graphics.onPaintOp = { [weak self] _ in
@@ -494,6 +501,15 @@ final class MachineEngine: ObservableObject {
         cheat.attach(vm)
         vm.randomHook = { [weak self] n, frameBase in
             self?.cheat.diceOverride(n: n, frameBase: frameBase)
+        }
+        // 卡片：赌神 / 赌圣常驻。**不改内存、不塞手牌** —— 游戏调 `hasCard`
+        // 问这两张卡时，钩子直接替它答「有」（返回槽位号）。钩子同样跑在 VM 线程。
+        // 第二个目标 `casinoEntry` 是赌场入口：赌圣要在「进门、还没押注」那一刻
+        // 把本局三粒定下来（赌场是押注之后才掷骰的，见 `BBCheat.planRound`）。
+        vm.callHookTarget = BBCheatMap.hasCardEntry
+        vm.callHookTarget2 = BBCheatMap.casinoEntry
+        vm.callHook = { [weak self] target, frameBase in
+            self?.cheat.callOverride(target: target, frameBase: frameBase)
         }
 
         current = program
@@ -573,12 +589,31 @@ final class MachineEngine: ObservableObject {
         machine?.input.dropPendingDirections()
     }
 
+    /// 屏幕点击 = 鼠标左键（原 VM 的语义）。
+    ///
+    /// 但**这两年的移植游戏基本不认鼠标**：flappybird 的标题画着大大的「TAP」，
+    /// 实际代码问的是 `KeyPressed(32)`（空格）。它从不阻塞等键，所以队列里的
+    /// 鼠标事件它一辈子也读不到 —— 「点了没反应」就是这么来的。
+    ///
+    /// 判定规则：**从没用过阻塞式读键的程序**（`isPollingOnlyProgram`），
+    /// 点屏幕就额外合成一次「动作键」短按（空格 + 回车）。
+    /// 反之（大富翁这种阻塞式程序）点了还是只发鼠标事件 —— 否则随手点一下
+    /// 屏幕就等于按了确定键，会莫名其妙掷骰子。
     func tap(x: Int, y: Int) {
-        machine?.input.pushTap(x: x, y: y)
+        guard let machine else { return }
+        machine.input.pushTap(x: x, y: y)
+        if machine.isPollingOnlyProgram {
+            machine.input.pulseHeld([BBKey.space, BBKey.enter])
+        }
     }
 
     func hold(_ code: UInt32, _ pressed: Bool) {
         machine?.input.setHeld(code, pressed: pressed)
+    }
+
+    /// 手势被打断时把按住状态全部松开（见 `BBInputQueue.releaseAllHeld`）
+    func releaseAllHeld() {
+        machine?.input.releaseAllHeld()
     }
 
     func sendText(_ scalar: UInt32) {
@@ -628,6 +663,19 @@ final class MachineEngine: ObservableObject {
         let copyMS = (CACurrentMediaTime() - tCopyStart) * 1000
         let w = shot.width
         let h = shot.height
+
+        // 赌圣卡的「预知」：进门就把本局三粒定下来（见 `BBCheat.planRound`），
+        // 押注前游戏还没画骰面 —— 这里把它贴到画面上，玩家下注时就能看到结果。
+        // 必须放在「画面没变就返回」之前：静止时这一帧才会被算成新帧；
+        // 又必须在 memcmp 之前画完，这样每帧贴的是同一批像素，静止判定照样成立。
+        // VM 自己的画布一个字都不动。
+        //
+        // ⚠️ 倍率必须给 `BBHD.scale`（画布 = 逻辑坐标 × BBHD.scale，见 `drawPicture`）。
+        //    以前按 `w / 320` 推，3× 时算出来是 2 —— 三粒骰子画在 3/4 的位置上、
+        //    只有 3/4 大，和面板数字对不上（「押宝前看得到但位置错」就是它）。
+        cheat.noteScene(sceneDetector.scene)
+        cheat.paintCasinoPreview(into: &scratch, width: w, height: h,
+                                 scale: max(1, BBHD.scale))
 
         if w != scratchW || h != scratchH {
             scratchW = w

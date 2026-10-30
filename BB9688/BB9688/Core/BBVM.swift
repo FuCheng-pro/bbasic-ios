@@ -330,6 +330,20 @@ public final class BBVM {
         regs[reg] = (regs[reg] & ~mask) | (value & mask)
     }
 
+    /// 程序有没有用过**阻塞式**读键（`OUT 39` WaitKey / `45` InKey$ / `46` INKEY）。
+    ///
+    /// 程序读键盘有两种方式，输入层要做的准备完全不同：
+    ///   • 阻塞式：程序停下来等键 → 按键进队列就行（大富翁是这种）；
+    ///   • 实时轮询 `OUT 34`（KeyPressed）：「这个键现在按着吗」→ 只认按住状态，
+    ///     队列里的键它永远看不见（flappybird、是男人就下100层）。
+    ///
+    /// 一个从不用阻塞式读键的程序，就是纯轮询型。界面上据此决定
+    /// 「点屏幕」要不要合成一次按键 —— 见 `MachineEngine.tap`。
+    public internal(set) var usedBlockingKeyRead = false
+
+    /// 只轮询、从不阻塞等键 —— 这种程序在真机上基本是「点屏幕才动」的移植游戏
+    public var isPollingOnlyProgram: Bool { !usedBlockingKeyRead }
+
     /// 读内存的旁路观察口（诊断用，默认 nil）。
     ///
     /// 参数是「读的地址」和「当时正在执行的 pc」。研究金手指时用它定位
@@ -337,12 +351,64 @@ public final class BBVM {
     /// VM 线程同步调用；生产环境保持 nil，只多一次判空。
     public var memReadHook: ((_ address: Int, _ pc: UInt32) -> Void)?
 
+    /// 写内存的旁路观察口（诊断用，默认 nil）。参数：地址、写入值、当时的 pc。
+    /// 用来回答「谁在改股价表」这类问题 —— 只开在探针里。
+    public var memWriteHook: ((_ address: Int, _ value: UInt32, _ pc: UInt32) -> Void)?
+
+    /// 金手指钩子：`CALL` 的入口。参数是「被调函数入口 pc」和「**将被调函数的帧基址**
+    /// （= 调用方的 rs - 8，所以被调函数看到的参数就在 `frameBase+12 / +16 …`）」。
+    ///
+    /// 返回非 nil 表示**不执行被调函数体**，直接带着这个值「返回」—— 返回值走
+    /// `r3` 寄存器（这个 VM 的约定：函数尾声都是 `[rb] <- r3; rs <- rb; POP rb; RET`）。
+    ///
+    /// 用途：让游戏某个「查询」函数给出我们想要的答案，而**不改它读的内存**。
+    /// 典型用法见 `BBCheat.callOverride`（回答「手里有没有赌神卡 / 赌圣卡」）。
+    ///
+    /// ⚠️ 只有 `callHookTarget` 命中的那一次 CALL 才会调它 —— 主循环里对每次 CALL
+    /// 只多一次整数比较，不会为几百万条指令都走一次闭包。
+    public var callHook: ((_ target: UInt32, _ frameBase: UInt32) -> UInt32?)?
+
+    /// `callHook` 只关心这个 pc（0 = 关掉钩子）。见上面的说明。
+    public var callHookTarget: UInt32 = 0
+
+    /// 第二个目标 pc。两个槽就够用：`hasCard` 一个、赌场入口一个。
+    public var callHookTarget2: UInt32 = 0
+
+    /// 从游戏自己的随机序列里**提前**取一个 `0..<n` 的值。
+    ///
+    /// 赌场是「先押宝、后掷骰」，所以押宝那一刻本局点数还不存在；`diceOverride`
+    /// 在 `RND` 真正被调时把值换掉也没用（那时已经押完了）。要「预知」只能进门
+    /// 就先从同一条随机序列里把三粒抽出来、存着，等游戏真掷的时候原样还给它 ——
+    /// 玩家看到的就是最终结果，而点数仍然出自游戏自己的 RNG。
+    ///
+    /// ⚠️ 只能在 VM 线程调（`rng` 不是线程安全的）。
+    public func pullRand(_ n: UInt32) -> UInt32 {
+        guard n > 0 else { return 0 }
+        return rng.rand() % n
+    }
+
+    /// 定点写监视：盯住 `[watchBase, watchBase + watchCount*4)` 这几格，谁写它、
+    /// 写了什么，都回调一次。`watchCount = 0` 就不看（主循环只多一次比较）。
+    ///
+    /// 为什么需要它：赌场那三粒骰子掷完就存在栈帧的 `[rb-4] / [rb-8] / [rb-12]`，
+    /// 但**那三个格子马上被后续绘制复用**（实测 0.8 秒后里面是骰盅的 86 / 46），
+    /// 想事后去读必然是垃圾。只能在他们落笔的那一刻接住。
+    public var watchBase: UInt32 = 0
+    public var watchCount: Int = 0
+    /// 参数：相对 `watchBase` 的字节偏移、写入值
+    public var onWatched: ((_ offset: UInt32, _ value: UInt32) -> Void)?
+
     func getMem(_ addr: UInt32) -> UInt32 {
         if let hook = memReadHook { hook(Int(addr), rp) }
         return memory.read32(Int(addr))
     }
 
     func putMem(_ addr: UInt32, _ value: UInt32, size: Int) {
+        if let hook = memWriteHook { hook(Int(addr), value, rp) }
+        if watchCount > 0, addr >= watchBase, addr - watchBase < UInt32(watchCount * 4),
+           let hook = onWatched {
+            hook(addr - watchBase, value)
+        }
         memory.write(Int(addr), value, sizeBytes: size)
     }
 
@@ -460,8 +526,23 @@ public final class BBVM {
                 regs[R.rp] = rp &+ UInt32(cmdLen)
             }
         case 0x8:   // CALL
-            push(rp &+ UInt32(cmdLen))
-            regs[R.rp] = getData(addressing, arg)
+            let target = getData(addressing, arg)
+            // 被调函数的帧基址：它自己的序言是 `PUSH rb; LD rb <- rs`，
+            // 也就是 rs（现在指向返回地址的位置）再减 4 → 参数落在 frameBase+12 起。
+            // 两个目标槽：金手指要同时挂「hasCard」和「赌场入口」这类互不相干的
+            // 两个点，而 CALL 是热路径 —— 用 Set 每次都得哈希，这里就两次整数比较。
+            let hooked = (callHookTarget != 0 && target == callHookTarget)
+                || (callHookTarget2 != 0 && target == callHookTarget2)
+            if let hook = callHook, hooked,
+               let forced = hook(target, regs[R.rs] &- 8) {
+                // 跳过函数体，按「已返回」继续：返回值走 r3，rs 保持调用前的样子
+                // （被调函数尾声的 `rs <- rb; POP rb` 净效果就是还原 rs）。
+                regs[R.r3] = forced
+                regs[R.rp] = rp &+ UInt32(cmdLen)
+            } else {
+                push(rp &+ UInt32(cmdLen))
+                regs[R.rp] = target
+            }
         case 0x9:   // RET
             regs[R.rp] = pop()
         case 0xA:   // CMP

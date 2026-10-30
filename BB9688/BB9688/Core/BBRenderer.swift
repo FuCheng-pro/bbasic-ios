@@ -42,6 +42,21 @@ public final class BBGraphics {
     /// 真正有辨识度的是**圆**（地图和菜单几乎不画圆）。
     public var onPaintOp: ((Int) -> Void)?
 
+    /// 金手指钩子：**每一笔贴图都会进来**，返回 false = 这一笔不画。
+    ///
+    /// 两个用处，都跟赌圣卡有关：
+    ///  · 拦：赌场进门先把三粒骰面贴上去，紧接着又贴一张 86×46 的骰盅盖住它们，
+    ///    把盖盅那一笔拦掉，玩家下注时看到的一直是游戏自己画的骰子。
+    ///  · 记：顺手把「这一笔记的是哪一帧」告诉上层（`srcX`），于是面板上的点数和
+    ///    屏幕上真正画出来的像素出自**同一个数** —— 不用再去猜内存里哪三个格是骰子
+    ///    （实测那三格会被后续绘制复用，事后读出来是 2/2/1，而屏幕上是 2/5/5）。
+    ///
+    /// ⚠️ 地图一帧几百笔，实现里第一件事必须是纯整数比较，别在这里做任何查找。
+    ///
+    /// 参数：资源序号（RICH.LIB 的 #，认不出时 -1）、目标 x/y、宽、高、源图 x。
+    public var onPicture: ((_ index: Int, _ dx: Int, _ dy: Int,
+                           _ w: Int, _ h: Int, _ srcX: Int) -> Bool)?
+
     /// 洋红透明键（原实现用 0xFF00FF）
     public static let colorKey: UInt32 = 0xFF00FF
 
@@ -154,13 +169,16 @@ public final class BBGraphics {
     /// HD 模式下源矩形和目标坐标都按 BBHD.scale 放大，1:1 贴到 4× 画布上。
     public func drawPicture(page: Int, pic: Int, dx: Int, dy: Int,
                             w: Int, h: Int, x: Int, y: Int, mode: Int) {
+        let index = resourceIndex[pic] ?? -1
         guard let dst = surface(page), let src = picture(pic) else { return }
+        // 场景识别信号照常发：它看的是「游戏想画什么」，和我们真画没画无关。
+        if let onPictureDrawn, index >= 0 {
+            onPictureDrawn(index, w * h)
+        }
+        if let hook = onPicture, !hook(index, dx, dy, w, h, x) { return }
         if let trace {
             trace("SHOWPIC page=\(page) pic=\(pic) [\(resourceNames[pic] ?? "?")] "
                   + "dst=(\(dx),\(dy)) src=(\(x),\(y)) \(w)x\(h) mode=\(mode)")
-        }
-        if let onPictureDrawn, let index = resourceIndex[pic] {
-            onPictureDrawn(index, w * h)
         }
         let s = BBHD.scale
         dst.blit(from: src, sx: x * s, sy: y * s, sw: w * s, sh: h * s,
