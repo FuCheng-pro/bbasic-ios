@@ -18,11 +18,26 @@
 //    ---------------------------------------------------------------
 //    摇杆 ↑ ↓       上一个 / 下一个       38 / 40
 //    摇杆 ← →       上一个 / 下一个       37 / 39
-//    摇杆 中键      打开选中项            13  回车（确定）
+//    摇杆 中键      打开选中项            13 + 32（回车 / 空格）
 //    左椭圆键 短按  提示设置在哪          27  ESC（程序里的返回/取消）
 //    左键 **连按两下** ——                 回程序列表（系统级退出）
-//    右椭圆键 短按  打开选中项            13  回车（确定）
+//    右椭圆键 短按  打开选中项            13 + 32（回车 / 空格）
 //    侧边电源键     ——（不再是热区）      ——
+//
+//  ── 每个按键有两条通道，缺一不可 ──
+//
+//    • `sendKey` → 队列：阻塞式读键（`OUT 39` / WaitKey）的程序从队列里取事件。
+//      大富翁是这种，它平时就停在 WaitKey 上等，一个键一个键地吃。
+//    • `hold` → 按住状态：实时轮询（`OUT 34` / KeyPressed）的程序只问
+//      「这个键**现在**按着吗」，队列里的东西它一辈子看不见。
+//      flappybird、是男人就下100层 都是这种。
+//
+//    只做队列的时候，后一类程序「进得去、按什么都没反应」——
+//    这是 2026-10-27 用户报的那个 bug（见 `Tools/headless/inputtest`）。
+//
+//    动作键同时按住 **13 和 32**：现有程序分成两派（大富翁 / MAN 认 13，
+//    flappybird 认 32），没有任何一个程序把这两个码用在两件事上。
+//    队列里仍然只发 13，避免阻塞式程序收到意料之外的键。
 //
 //  关机状态下任何物理键都开机（推摇杆、中键、左右椭圆键）——
 //  电源键不接热区之后，总得有一条能按出来的路，否则 App 一关就一直黑着。
@@ -84,6 +99,21 @@ struct DeviceView: View {
     /// 用来区分「没推 → 按的是中键」和「推出去又推回来 → 只是想换选项」，
     /// 抬手时不能只看向那一刻的方向（那时早已经被清成 nil 了）。
     @State private var stickMoved = false
+
+    /// 这一笔触摸**真正按住**的键码（用来保证抬手一定松开）。
+    ///
+    /// ★ 按键有两条通道：`sendKey` 往队列里塞一个事件（阻塞式 WaitKey 读它），
+    ///   `hold` 维护「现在按着吗」（轮询式 KeyPressed 读它）。
+    ///   以前只做前者，于是 flappybird、是男人就下100层 这类纯轮询程序
+    ///   进得去、按什么都没反应。这里记一份，抬手 / 手势被打断时逐个松开。
+    @State private var heldCodes: Set<UInt32> = []
+
+    /// 动作键：中键 / 右椭圆键同时按住「回车」和「空格」。
+    ///
+    /// 两个键码都得给 —— 现有程序分成两派：大富翁、是男人就下100层 认 13（回车），
+    /// flappybird 认 32（空格）。没有任何一个程序把这两个码用在两件事上，
+    /// 所以同时按住是安全的。队列里仍然只发 13（见 `handleEnded`）。
+    private static let actionCodes: [UInt32] = [BBKey.enter, BBKey.space]
 
     private static let repeatInterval: TimeInterval = 0.26
 
@@ -276,10 +306,17 @@ struct DeviceView: View {
             target = hitTest(p, W: W, H: H)
 
             switch target {
-            case .back:  pressed.insert("back")
-            case .menu:  pressed.insert("menu")
-            case .stick: pressed.insert("center")
-            default:     break
+            case .back:
+                pressed.insert("back")
+                hold([BBKey.escape])
+            case .menu:
+                pressed.insert("menu")
+                hold(Self.actionCodes)
+            case .stick:
+                pressed.insert("center")
+                hold(Self.actionCodes)
+            default:
+                break
             }
         }
 
@@ -437,6 +474,8 @@ struct DeviceView: View {
                 stickDirection = nil
                 stopRepeat()
                 app.flushInput()
+                // 方向键真的松开：轮询型程序靠它停下（一直按着 = 一直走）
+                releaseAllHeld()
                 pressed.remove("up"); pressed.remove("down")
                 pressed.remove("left"); pressed.remove("right")
                 pressed.insert("center")
@@ -462,6 +501,11 @@ struct DeviceView: View {
         pressed.remove("left"); pressed.remove("right")
         pressed.remove("center")
         pressed.insert(direction)
+
+        // 换成新方向：先松掉旧方向（和触屏开始时按下的「中键」动作键），
+        // 再按住新方向。轮询型程序只认按住状态，漏了这一步「换方向」它就收不到。
+        releaseAllHeld()
+        hold([Self.code(for: direction)])
 
         stopRepeat()          // 换方向先掐掉旧连发，免得两个方向交替推
         fire(direction)
@@ -516,12 +560,46 @@ struct DeviceView: View {
         repeatTimer = nil
     }
 
+    // MARK: - 按住状态（轮询型程序唯一的输入通道）
+
+    /// 按住这些键。只在运行中做 —— 列表 / 设置页那些界面不走虚拟机的读键。
+    private func hold(_ codes: [UInt32]) {
+        guard app.mode == .running else { return }
+        for code in codes where !heldCodes.contains(code) {
+            app.hold(code, pressed: true)
+            heldCodes.insert(code)
+        }
+    }
+
+    /// 松开所有按住的键
+    private func releaseAllHeld() {
+        guard !heldCodes.isEmpty else { return }
+        for code in heldCodes { app.hold(code, pressed: false) }
+        heldCodes.removeAll()
+        // 再让输入层整体清一次，兜住「View 侧记的和实际按下的不一致」这种情况
+        app.releaseHeldKeys()
+    }
+
+    private static func code(for direction: String) -> UInt32 {
+        switch direction {
+        case "up":   return BBKey.up
+        case "down": return BBKey.down
+        case "left": return BBKey.left
+        default:     return BBKey.right
+        }
+    }
+
     /// 把这一笔触摸留下的所有瞬时状态清干净
     private func resetInteraction() {
         stopRepeat()
         stickDirection = nil
         stickMoved = false
         pressed.removeAll()
+        // ★ 按住状态一定要在这里松开。onEnded 会被系统手势吞掉
+        //   （来电、下拉通知中心、切后台、面板弹出），松手事件永远不来；
+        //   不松开的话轮询型程序里那个键会一直按着 —— 小鸟一直往上飞、
+        //   菜单自己往下滑，看起来像「卡住了」。
+        releaseAllHeld()
         app.flushInput()
     }
 }

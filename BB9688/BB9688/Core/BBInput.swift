@@ -6,6 +6,9 @@
 //
 
 import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
 
 public final class BBInputQueue {
     private let condition = NSCondition()
@@ -18,6 +21,9 @@ public final class BBInputQueue {
     private var keyQueue: [PendingKey] = []
     private var textQueue: [UInt32] = []
     private var heldKeys = Set<UInt32>()
+    /// 每个按住键的按下时刻。只为一个目的存在：保证「按下 → 松开」之间至少够长，
+    /// 见 `minPressDuration`。
+    private var heldAt: [UInt32: TimeInterval] = [:]
     private var stopped = false
 
     /// 待取按键的上限。程序卡在一个不读键盘的画面里时（加载动画、过场），
@@ -43,6 +49,18 @@ public final class BBInputQueue {
     ///   积压的风险靠另一条规则兜着：方向键在队列里去重（见 `pushKey`），
     ///   而且 `dropPendingDirections` 在松手时清空，不会出现「松手了还在走」。
     private static let maxKeyAge: TimeInterval = 1.5
+
+    /// 一次按键至少要按住这么久，才允许真正「松开」。
+    ///
+    /// ★ 为什么必须有这条：程序读键盘有两种完全不同的方式 ——
+    ///   • **阻塞式** `OUT 39`（WaitKey / InKey$）：程序停下来等，按键进队列就行（大富翁是这种）；
+    ///   • **实时轮询** `OUT 34`（KeyPressed）：程序一直在跑，只问「这个键**现在**按着吗」，
+    ///     队列里的东西它一辈子看不见（flappybird、是男人就下100层都是这种）。
+    ///
+    ///   轮询型的程序只认 `heldKeys`。而手指点一下只有几十毫秒，如果按下和松手
+    ///   落在程序两帧之间，它一次都没轮到 —— 表现就是「点了没反应」。
+    ///   真机键盘的按下时长也不会短于 80ms，这里补到 100ms（人感觉不出来）。
+    private static let minPressDuration: TimeInterval = 0.10
 
     /// 方向键：程序几乎只用它挪光标，重复排队没有任何意义
     private static let directionKeys: Set<UInt32> = [37, 38, 39, 40]
@@ -99,6 +117,7 @@ public final class BBInputQueue {
         keyQueue.removeAll()
         textQueue.removeAll()
         heldKeys.removeAll()
+        heldAt.removeAll()
         condition.unlock()
     }
 
@@ -109,8 +128,58 @@ public final class BBInputQueue {
     }
 
     public func setHeld(_ code: UInt32, pressed: Bool) {
+        if pressed {
+            condition.lock()
+            heldAt[code] = Date.timeIntervalSinceReferenceDate
+            heldKeys.insert(code)
+            condition.unlock()
+            return
+        }
+
         condition.lock()
-        if pressed { heldKeys.insert(code) } else { heldKeys.remove(code) }
+        let pressTime = heldAt[code]
+        let elapsed = pressTime.map { Date.timeIntervalSinceReferenceDate - $0 } ?? .infinity
+        if elapsed >= Self.minPressDuration {
+            heldAt[code] = nil
+            heldKeys.remove(code)
+            condition.unlock()
+            return
+        }
+        condition.unlock()
+
+        // 按得太短：先留着不放，补足时长再松（见 `minPressDuration`）。
+        // 补发时核对一下按下时刻 —— 期间若又按了一次，这次补发就作废，
+        // 不能把新的那一次按给松掉。
+        let delay = Self.minPressDuration - elapsed
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self else { return }
+            self.condition.lock()
+            if self.heldAt[code] == pressTime {
+                self.heldAt[code] = nil
+                self.heldKeys.remove(code)
+            }
+            self.condition.unlock()
+        }
+    }
+
+    /// 短按一次（按下 → 一小会儿后自动松开）。
+    /// 给「点屏幕」用：轮询型程序（flappybird）只认按住状态，点一下就是一个动作键。
+    public func pulseHeld(_ codes: [UInt32], duration: TimeInterval = 0.12) {
+        for code in codes { setHeld(code, pressed: true) }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + duration) { [weak self] in
+            for code in codes { self?.setHeld(code, pressed: false) }
+        }
+    }
+
+    /// 把所有按住状态清掉。
+    ///
+    /// 手势被打断（来电、切后台、面板弹出、视图消失）时 onEnded 会丢，
+    /// 松手事件于是永远不来 —— 不清的话那个键会一直按着：轮询型程序表现为
+    /// 「小鸟一直往上飞」「菜单自己往下滑」。
+    public func releaseAllHeld() {
+        condition.lock()
+        heldKeys.removeAll()
+        heldAt.removeAll()
         condition.unlock()
     }
 

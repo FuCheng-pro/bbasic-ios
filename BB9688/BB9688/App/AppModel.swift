@@ -292,6 +292,22 @@ final class AppModel: ObservableObject {
         engine.tap(x: x, y: y)
     }
 
+    /// 按下 / 松开（真实时状态）。
+    ///
+    /// 和 `sendKey` 是两条通道，缺一不可：
+    /// `sendKey` 往队列里塞一个键事件（阻塞式 WaitKey 读它），
+    /// `hold` 维护「这个键现在按着吗」（轮询式 KeyPressed 读它）。
+    /// 只做前者的话，flappybird / 是男人就下100层 这类程序按了完全没反应。
+    func hold(_ code: UInt32, pressed: Bool) {
+        guard mode == .running else { return }
+        engine.hold(code, pressed)
+    }
+
+    /// 手势被打断 / 视图消失：把所有按住状态松开，避免「键一直按着」
+    func releaseHeldKeys() {
+        engine.releaseAllHeld()
+    }
+
     /// 松手时清掉残留的方向键
     func flushInput() {
         engine.dropPendingDirections()

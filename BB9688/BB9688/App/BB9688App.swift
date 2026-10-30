@@ -206,6 +206,10 @@ struct RootView: View {
     private var gearButton: some View {
         Button {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            // 面板一出来就会吃掉机身上的手势，onEnded 于是永远不来。
+            // 先把按住状态全松开，免得面板开着的这段时间游戏里有个键一直按着
+            // （轮询型程序的表现是「小鸟自己往上飞」）。
+            app.releaseHeldKeys()
             withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
                 showPanel.toggle()
             }
